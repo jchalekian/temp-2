@@ -1,0 +1,1185 @@
+
+# Program to illustrate data step, feature creation, pre-analysis and model build/comparison
+# Use Lending club data to build binary classification algorithms 
+# 
+
+# Install all packages (i have also left them inline where the are used)
+
+install.packages("Hmisc")
+install.packages("smbinning")
+install.packages("caret")
+
+install.packages("rms")
+install.packages("gbm")
+install.packages("randomForest")
+install.packages("ggplot2")
+install.packages("reshape")
+install.packages("corrgram")
+install.packages("scales")
+install.packages("devtools")
+install.packages("glmnet")
+#install.packages("e1071")
+#install_github("riv","tomasgreif/riv")
+#install_github("woe","tomasgreif/woe")
+
+
+library(smbinning)
+library(Hmisc)
+library(caret)
+
+library(rms)
+library(gbm)
+library(randomForest)
+library(ggplot2)
+library(reshape)
+library(corrgram)
+library(scales)
+library(devtools)
+library(glmnet)
+#library(e1071)
+#library(woe)
+#rary(riv) 
+
+
+source("C:/Users/jchalekian/Desktop/R Files/LIFT.R")
+source("C:/Users/jchalekian/Desktop/R Files/AUC.R")
+source("C:/Users/jchalekian/Desktop/pre_analysis_cont.R")
+source("C:/Users/jchalekian/Desktop/bin2.R")
+source("C:/Users/jchalekian/Desktop/varlist.R")
+#DATA IN
+#read in csv, I have downloaded it and saved it on S
+#lc=read.csv("S:/lendingclub_15_reduced.csv")
+
+lc16=read.csv("C:/Users/jchalekian/Desktop/LC_16_Processed.csv")
+#lc16=read.csv("S:/LC_16_Processed.csv")
+# Like proc contents
+str(lc16)
+str(lc16$grade)
+lc=lc16
+
+#lc=lc[which(lc$Inclusion==1),] #drop assets without sufficient performance data
+# Explore issue date distribution
+table(lc$issue_d)
+class(lc$issue_d)
+#Transform date data into correct date format, always a tricky step.
+
+#lc$isdt2=as.Date(lc$issue_d, origin="1899-12-30")
+#table(lc$isdt2)
+#lc$paydt2=as.Date(lc$last_pymnt_d, origin="1899-12-30")
+
+#note this is the format of the variable created in the paste function
+lc$issue=as.Date(paste(lc$issue_d, "01", sep="-" ),format="%b-%y-%d") 
+class(lc$issue)
+#note this is the format of the variable created in the paste function
+lc$lpay=as.Date(paste(lc$last_pymnt_d, "01", sep="-" ),format="%b-%y-%d")
+table(lc$issue)
+#subset to ensure each account has at least 12 months of tenure since origination
+#lc=lc[ which(as.numeric(lc$issue)<as.numeric(as.Date('01-Jul-14', format="%d-%b-%y"))),] #'01-Jul-14'= downlaod date
+
+#Derive days between issue and last payment
+lc$delt_d=as.numeric(lc$lpay-lc$issue)
+str(lc$delt_d)
+
+# Derive Target Feature
+#define chargeoff assets for 12 month perf window 
+#include & !is.na(lc$delt_d ) to remove missing!?
+lc$cofy=0
+lc$cofy<-ifelse(lc$loan_status=='Charged Off' & (lc$delt_d<360 & !is.na(lc$delt_d )), c(1), c(0))
+lc16$minpay=ifelse(lc16$annual_inc>0,lc16$total_bal_ex_mort*lc16$int_rate+.12*lc16$total_bal_ex_mort,c(0))
+#Explore target
+table(lc$cofy)
+mean(lc$cofy)
+table(lc$loan_status)
+require(Hmisc)
+describe(lc$cofy)
+
+#subset of just chraged off accounts for saving and explore no asset > 360
+lcco=lc[which(lc$cofy==1),]
+describe(lcco$delt_d)
+
+#remove missing values in target
+lcback=lc #save sub set with performance window pass and missing target
+lcmissing=subset(lc,is.na(cofy)) #missings only to retain them
+lc=subset(lc,!is.na(cofy)) #missings excluded
+
+
+#more date caclculations for feature creation
+# Age in years of first credit line
+lc$cbdate=as.Date(paste(lc$earliest_cr_line, "01", sep="-" ),format="%b-%y-%d")
+lc$creditage=as.numeric((as.Date('01-Jul-14', format="%d-%b-%y")-lc$cbdate)/365 )
+
+#test if credit age looks different between target groups to see if its useful
+tapply(as.numeric(lc$creditage), lc$cofy, describe )
+tapply(as.numeric(lc$creditage), lc$cofy, mean )
+hist(as.numeric(lc$creditage))
+hist(as.numeric(lc$delt_d))
+
+#Drop negative values for age
+lc=lc[which(lc$creditage>=0),]
+tapply(as.numeric(lc$creditage), lc$cofy, describe )
+
+
+#explore distribution split by target
+library(ggplot2)
+qplot(as.numeric(creditage), data=lc, facets=cofy~.)
+
+
+#Exploratory analysis and feature creation
+#mean difference by term length
+tapply(lc$cofy, lc$term, mean )
+
+
+# First subset out 60 from 36 month loans
+# Choose on 60 month loans
+
+lc60=lc[which(lc$term==" 60 months"),]
+mean(lc60$cofy)
+table(lc60$cofy)
+table(lc60$loan_status)
+require(Hmisc)
+describe(lc60$cofy)
+
+
+
+#custom DTI calcs
+
+lc60$min_revol=lc60$revol_bal*lc60$int_rate/12+.01*lc60$revol_bal
+describe(lc60$min_revol)
+lc60$min_instl=lc60$total_bal_il/45
+describe(lc60$min_instl)
+lc60$mon_min=lc60$min_revol+lc60$min_instl
+describe(lc60$mon_min)
+hist(lc60$mon_min)
+lc60$lc_mon_min=lc60$dti/100*lc60$annual_inc/12
+describe(lc60$lc_mon_min)
+
+lc60$mon_min=na.roughfix(lc60$mon_min, median(lc60$mon_min))
+describe(lc60$mon_min)
+
+describe(lc60$annual_inc)
+pr <- .975
+q  <- quantile(lc60$annual_inc, c(1-pr, pr))
+lc60$annual_inc_i <- squish(lc60$annual_inc, q)
+describe(lc60$annual_inc_i)
+
+lc60$dti_jco=lc60$mon_min*12/lc60$annual_inc_i
+lc60$dti_jco=na.roughfix(lc60$dti_jco)
+describe(lc60$dti_jco)
+describe(lc60$dti)
+
+
+#find continuus list and check for missings
+#check missing target removed
+#Numerical
+nums <- unlist(lapply(lc60, is.numeric))  #find numerics
+lc60num=lc60[ , nums] #only keep those
+str(lc60num)
+missing=data.frame(sapply(lc60num,function(x)sum(is.na(x)))) #create data table of missing freq open and sort
+#drop or ignore/flag high misssing
+#in some cases missing is good tho???
+#Categrorical
+cats <- unlist(lapply(lc60, is.factor))  #find cats
+lc60cat=lc60[ , cats] #only keep those
+str(lc60cat)
+missingcats=data.frame(sapply(lc60cat,function(x)sum(is.na(x)))) #create data table of missing freq open and sort
+#drop or ignore/flag high misssing
+#in some cases missing is good tho???
+
+#source("C:/Users/jchalekian/Desktop/pre_analysis_cont.R")
+#cont_pre(df, expvar, target, nrnk)
+#df=data frame for analysis
+#target=bianry outcome
+#expvar=variable of interest
+#nrnk=number of bins for means groups and plot
+hist(lc60$dti)
+describe(lc60$dti)
+cont_pre(lc60, dti, cofy, 10)
+cont_pre(lc60, dti_jco, cofy, 10)
+cont_pre(lc60, annual_inc, cofy, 20)
+#truncate extremes
+glm.ck=glm(cofy~annual_inc, data=lc60)
+mean(glm.ck$fitted.values)
+summary(glm.ck)
+pr <- .975
+q  <- quantile(lc60$annual_inc, c(1-pr, pr))
+lc60$annual_inc <- squish(lc60$annual_inc, q)
+glm.ck=glm(cofy~annual_inc, data=lc60)
+summary(glm.ck)
+glm.ck2=lrm(cofy~annual_inc, data=lc60)
+glm.ck2
+cont_pre(lc60, fico_range_high, cofy, 10)
+cont_pre(lc60, creditage, cofy, 20)
+cont_pre(lc60, mo_sin_old_rev_tl_op, cofy,10)
+cont_pre(lc60, mo_sin_rcnt_rev_tl_op, cofy,10)
+cont_pre(lc60, open_acc, cofy, 10)
+cont_pre(lc60, revol_bal, cofy, 10)
+cont_pre(lc60, all_util, cofy,10)
+
+
+
+
+#Add  binning alorithm for continous that could be binned
+
+
+#not predictive 
+#cont_pre(lc60, num_bc_sats, cofy,5)
+#cont_pre(lc60, num_rev_tl_bal_gt_0, cofy,6)#consider as bin
+#bin(lc60, num_rev_tl_bal_gt_0, "num_rev_tl_bal_gt_0", "cofy")
+#cont_pre(lc60, num_rev_accts, cofy,10)
+
+#Add  binning alorithm for continous that could be binned
+#source("C:/Users/jchalekian/Desktop/bin2.R")
+#bin(df, expvar, "expvar", "target")
+#df=data frame for analysis
+#target=bianry outcome
+#expvar=variable of interest
+#text in "" needs to be wrapped 
+
+
+cont_pre(lc60, open_rv_24m, cofy,10)#Consider binning
+hist(lc60$open_rv_24m)
+bin(lc60, open_rv_24m, "open_rv_24m", "cofy")
+describe(lc60$open_rv_24m)
+#create binned variable in data set
+lc60$open_rv_24m<- as.numeric(impute(lc60$open_rv_24m, mean))
+describe(lc60$open_rv_24m)
+result=smbinning(df=lc60,y="cofy",x="open_rv_24m",p=0.05) 
+lc60=smbinning.gen(lc60, result, chrname = "openrev24_bin") #USE VS CONT
+tapply(lc60$cofy, lc60$openrev24_bin, mean )
+table(lc60$openrev24_bin)
+class(lc60$openrev24_bin)
+
+cont_pre(lc60, inq_last_6mths, cofy,3)#Consider binning
+bin(lc60, inq_last_6mths, "inq_last_6mths", "cofy")
+describe(lc60$inq_last_6mths)
+lc60$inq_last_6mths<- as.numeric(impute(lc60$inq_last_6mths, mean))
+describe(lc60$inq_last_6mths)
+result=smbinning(df=lc60,y="cofy",x="inq_last_6mths",p=0.05) 
+lc60=smbinning.gen(lc60, result, chrname = "inq6_bin")
+tapply(lc60$cofy, lc60$inq6_bin, mean )
+table(lc60$inq6_bin)
+
+cont_pre(lc60, inq_last_12m, cofy,5)#Consider binning
+bin(lc60, inq_last_12m, "inq_last_12m", "cofy")
+describe(lc60$inq_last_12m)
+lc60$inq_last_12m<- as.numeric(impute(lc60$inq_last_12m, mean))
+describe(lc60$inq_last_12m)
+result=smbinning(df=lc60,y="cofy",x="inq_last_12m",p=0.05) 
+lc60=smbinning.gen(lc60, result, chrname = "inq12_bin")  #USE CAT AND 12 vs 6 inq
+tapply(lc60$cofy, lc60$inq12_bin, mean )
+table(lc60$inq12_bin)
+
+#dont know why this one doesnt work???
+cont_pre(lc60, delinq_2yrs, cofy,5)#Consider binning
+bin(lc60, delinq_2yrs, "delinq_2yrs", "cofy")
+result=smbinning(df=lc60,y="cofy",x="delinq_2yrs",p=0.05)
+lc60=smbinning.gen(lc60, result, chrname = "dq2yr_bin")
+
+
+
+cont_pre(lc60, tot_cur_bal, cofy, 10)
+bin(lc60, tot_cur_bal, "tot_cur_bal", "cofy")
+describe(lc60$tot_cur_bal)
+result=smbinning(df=lc60,y="cofy",x="tot_cur_bal",p=0.05) 
+lc60=smbinning.gen(lc60, result, chrname = "totcur_bin")#use cat version over cont
+tapply(lc60$cofy, lc60$totcur_bin, mean )
+table(lc60$totcur_bin)
+
+
+cont_pre(lc60, bc_open_to_buy, cofy,5)
+bin(lc60, bc_open_to_buy, "bc_open_to_buy", "cofy")
+describe(lc60$bc_open_to_buy)
+lc60$bc_open_to_buy<- as.numeric(impute(lc60$bc_open_to_buy, 0))
+describe(lc60$bc_open_to_buy)
+result=smbinning(df=lc60,y="cofy",x="bc_open_to_buy",p=0.05)#use bin vs cont
+lc60=smbinning.gen(lc60, result, chrname = "bcopen_bin")
+tapply(lc60$cofy, lc60$bcopen_bin, mean )
+table(lc60$bcopen_bin)
+lrm(cofy~bcopen_bin, data=lc60)
+
+#For variables we want to bin, create bins and write to data set.
+#lc60=smbinning.gen(lc60, result, chrname = "dti_bin")
+
+
+
+#take some of the continuos variables with a lot of missing data and categorize
+#Ternary employment variable
+#explore conitinous with a lot of missings to recode to groups
+
+lc60$dq<-ifelse((!is.na(lc60$mths_since_last_delinq)), c(1), c(0))
+table(lc60$dq,lc60$cofy)
+describe(lc$dq)
+tapply(lc60$cofy, lc60$dq, mean, is.NA=FALSE) #by groups summary to explore mean and missings
+#no impact at target
+
+
+#Explore some categoricals
+
+#CREATE RANKED GROUPS for FACTOR LEVEL VARS ON MEAN RESPONSE (BINNING IF YOU WILL)
+#rank means by state (or other vars e.g. scf) into state groups
+#get mean by factor level
+stmean=aggregate(lc60$cofy, list(lc60$addr_state), mean)
+#add rank to factor level
+stmean$strnk=cut(stmean$x, breaks=quantile(stmean$x, probs=c(0:20/20)), labels=1:20, 
+                 include.lowest=TRUE) 
+table(stmean$strnk)
+tapply(stmean$x, stmean$strnk, mean) 
+#rename rank factor from mean statement
+# rename programmatically 
+
+stmean <- rename(stmean, c(Group.1="addr_state"))
+stmean <- rename(stmean, c(x="st_mean"))
+plot(stmean$strnk, (stmean$st_mean), l)
+stmean$logit=log(stmean$st_mean/(1-stmean$st_mean))
+plot(stmean$strnk, (stmean$logit), l)
+#merge factor and rank and mean per factor back to raw data 
+lc60=merge(lc60, stmean, by='addr_state')
+#lc3=lc2[!duplicated(lc2$id),]
+require("Hmisc")
+table(lc60$strnk)
+tapply(lc60$cofy, lc60$strnk, describe) 
+#consider treating strnk as a factor in model
+
+lc60$strnknum=as.numeric(lc60$strnk)
+result=smbinning(df=lc60,y="cofy",x="strnknum",p=0.05) 
+print(result$ivtable)
+
+class(lc60$strnk)
+
+
+
+#Create final subset of data for first pass net of categroical vars
+#Use varlist() function to get all numeric variables
+#iv.mult(german_data,y="gb",vars=varlist(german_data,"numeric"))
+myvars <- c("dti", "annual_inc",  "fico_range_high",  "creditage",  "mo_sin_rcnt_rev_tl_op", "open_acc",
+            "revol_bal", "all_util", "tot_cur_bal", "open_rv_24m", "inq_last_6mths",  "inq_last_12m", "delinq_2yrs", 
+            "bc_open_to_buy")
+
+
+#Explore correlation
+
+lccorr=subset(lc60, select=myvars)
+describe(lccorr)
+#remove or replace missing values
+#use na.roughfix for simplicity in Randomforest
+lccorr=na.roughfix(lccorr)
+describe(lccorr)
+rcorr(as.matrix(lccorr))
+cor(lccorr, use="pairwise.complete.obs")
+# install.packages("corrgram")
+# require("corrgram")
+corrgram(lccorr, order=NULL, lower.panel=panel.shade,
+         upper.panel=NULL, text.panel=panel.txt,
+         main="check")
+
+
+#exclude all_util open_rv_24m inq_last_6mths
+#create model frame wil regressors
+# myvars2=c("cofy", "dti", "annual_inc",  "fico_range_high",  "creditage",  "mo_sin_rcnt_rev_tl_op", "open_acc",
+#           "revol_bal", "tot_cur_bal", "totcur_bin", "inq_last_12m", "inq12_bin", "delinq_2yrs", "strnk", 
+#           "bcopen_bin", "bc_open_to_buy")
+myvars2 <- c("cofy", "dti", "annual_inc",  "fico_range_high",  "creditage", "mo_sin_rcnt_rev_tl_op", "open_acc",
+            "revol_bal", "all_util", "tot_cur_bal", "inq_last_12m", "delinq_2yrs",   "bc_open_to_buy", "strnk")
+
+
+#with binned vars
+#myvars2=c("cofy", "dti", "annual_inc",  "fico_range_high",  "creditage",  "mo_sin_rcnt_rev_tl_op", "open_acc",
+          #"revol_bal", "totcur_bin", "inq12_bin", "delinq_2yrs", "strnk", "bcopen_bin")
+
+lcmod60=subset(lc60, select=myvars2, na.rm=TRUE)
+describe(lcmod60)
+lcmod60=na.roughfix(lcmod60)
+describe(lcmod60)
+lcmod60$strnk=as.numeric(lcmod60$strnk)
+class(lc60$strnk)
+class(lcmod60$strnk)
+# 
+# #Drop correlated feratures
+# #make notes on correlated numeric features
+# #consider when building models
+# 
+# 
+#  corrgram(lccorr, order=TRUE, lower.panel=panel.ellipse,
+#           upper.panel=panel.pts, text.panel=panel.txt,
+#           diag.panel=panel.minmax, 
+#           main="check")
+
+
+
+#Beign logit development
+#begin creating random split for train and test
+# 
+# install.packages("caret")
+# library(caret)
+
+
+
+
+
+myvars2 <- c("cofy", "dti", "annual_inc",  "fico_range_high",  "creditage", "mo_sin_rcnt_rev_tl_op", "open_acc",
+             "revol_bal", "all_util", "tot_cur_bal", "inq_last_12m", "delinq_2yrs",   "bc_open_to_buy", "strnk")
+
+describe(lcmod60$annual_inc)
+ pr <- .975
+ q  <- quantile(lcmod60$annual_inc, c(1-pr, pr))
+ lcmod60$annual_inc <- squish(lcmod60$annual_inc, q)
+ describe(lcmod60$annual_inc)
+ 
+ describe(lcmod60$dti)
+ pr <- .975
+ q  <- quantile(lcmod60$dti, c(1-pr, pr))
+ lcmod60$dti <- squish(lcmod60$dti, q)
+ describe(lcmod60$dti)
+ 
+ describe(lcmod60$mo_sin_rcnt_rev_tl_op)
+ pr <- .975
+ q  <- quantile(lcmod60$mo_sin_rcnt_rev_tl_opi, c(1-pr, pr))
+ lcmod60$mo_sin_rcnt_rev_tl_op <- squish(lcmod60$mo_sin_rcnt_rev_tl_op, q)
+ describe(lcmod60$mo_sin_rcnt_rev_tl_op)
+ 
+ describe(lcmod60$open_acc)
+ pr <- .975
+ q  <- quantile(lcmod60$open_acc, c(1-pr, pr))
+ lcmod60$open_acc <- squish(lcmod60$open_acc, q)
+ describe(lcmod60$open_acc)
+ 
+ describe(lcmod60$revol_bal)
+ pr <- .975
+ q  <- quantile(lcmod60$revol_bal, c(1-pr, pr))
+ lcmod60$revol_bal <- squish(lcmod60$revol_bal, q)
+ describe(lcmod60$revol_bal)
+ 
+ describe(lcmod60$all_util)
+ pr <- .975
+ q  <- quantile(lcmod60$all_util, c(1-pr, pr))
+ lcmod60$all_util <- squish(lcmod60$all_util, q)
+ describe(lcmod60$all_util)
+ 
+ describe(lcmod60$tot_cur_bal)
+ pr <- .975
+ q  <- quantile(lcmod60$tot_cur_bal, c(1-pr, pr))
+ lcmod60$tot_cur_bal <- squish(lcmod60$tot_cur_bal, q)
+ describe(lcmod60$tot_cur_bal)
+ 
+ describe(lcmod60$inq_last_12m)
+ pr <- .975
+ q  <- quantile(lcmod60$inq_last_12m, c(1-pr, pr))
+ lcmod60$inq_last_12m <- squish(lcmod60$inq_last_12m, q)
+ describe(lcmod60$inq_last_12m)
+ 
+ describe(lcmod60$delinq_2yrs)
+ pr <- .975
+ q  <- quantile(lcmod60$delinq_2yrs, c(1-pr, pr))
+ lcmod60$delinq_2yrs <- squish(lcmod60$delinq_2yrs, q)
+ describe(lcmod60$delinq_2yrs)
+ 
+ describe(lcmod60$bc_open_to_buy)
+ pr <- .975
+ q  <- quantile(lcmod60$bc_open_to_buy, c(1-pr, pr))
+ lcmod60$bc_open_to_buy <- squish(lcmod60$bc_open_to_buy, q)
+ describe(lcmod60$bc_open_to_buy)
+ 
+ #lcmod60$target=NULL
+ inTrain=createDataPartition(lcmod60$cofy, p=0.7, list= FALSE)
+ train=lcmod60[inTrain,]
+ test=lcmod60[-inTrain,]
+ nrow(train)
+ nrow(test)
+ mean(lcmod60$cofy)
+ mean(train$cofy)
+ mean(test$cofy)
+ 
+
+#explore logit
+#use glm and lrm
+
+glm.fit=glm(cofy~., data=train,family =binomial, x=TRUE, y=TRUE )
+lrm.fit=lrm(cofy~., data=train)
+
+summary(glm.fit)
+#summary(lrm.fit)
+lrm.fit
+glm.fit$df.null+1
+
+boxplot(glm.fit$fitted.values~train$cofy)
+par(mfrow=c(1,2))
+hist(glm.fit$fitted.values[lcmod60$cofy==0])
+hist(glm.fit$fitted.values[lcmod60$cofy==1])
+
+
+#Model assessment data build
+
+glmtrain=predict(glm.fit, newdata = train, type= "response")
+table(train$cofy, glmtrain > 0.075)
+
+perf.glmtrain = data.frame(glmtrain,as.numeric(train$cofy))
+names(perf.glmtrain) = c("predicted","actual")
+summary(perf.glmtrain)
+lift.glmtrain = LIFT(perf.glmtrain, "predicted", "actual", 1)
+AUC.glmtrain = AUC(lift.glmtrain, "RevRate.pct", "DetecRate.pct")
+AUC.glmtrain
+
+#testing model lift and AUC
+
+glmtest=predict(glm.fit, newdata = test, type= "response")
+perf.glmtest = data.frame(glmtest,as.numeric(test$cofy))
+names(perf.glmtest) = c("predicted","actual")
+summary(perf.glmtest)
+lift.glmtest = LIFT(perf.glmtest, "predicted", "actual", 1)
+AUC.glmtest = AUC(lift.glmtest, "RevRate.pct", "DetecRate.pct")
+AUC.glmtest
+
+
+
+#http://www.r-bloggers.com/illustrated-guide-to-roc-and-auc/
+#AUC=auc(as.numeric(test$target), as.numeric(ptest2[,2]) )
+#AUC2=auc(as.numeric(test$target), as.numeric(ptest) )
+#AUC
+#AUC2
+
+
+#Lift Chart Comparison
+
+par(mfrow=(c(1,1)))
+plot(lift.glmtest$RevRate.pct, lift.glmtest$DetecRate.pct, type = "l", col = "red",  lty=2, ylab="", xlab="") 
+grid(col="gray", lty = "dotted")
+lines(lift.glmtrain$RevRate.pct, lift.glmtrain$DetecRate.pct, type = "l", col = "blue")
+lines(c(0,100), c(0,100), type = "l", lty = 2, col = "black")
+
+title("Lift | test | GLM Test", ylab="Cumulative Lift", xlab="Review Rate")
+legend(x=70, y=40, c("Test","Train", "Random"), cex=0.8, col=c("red","blue","black"), lty=1)
+
+
+
+
+
+
+
+
+#explore lasso logit
+#https://web.stanford.edu/~hastie/glmnet/glmnet_alpha.html#log
+#https://stats.stackexchange.com/questions/136085/can-glmnet-logistic-regression-directly-handle-factor-categorical-variables-wi
+#https://stackoverflow.com/questions/26806902/how-to-get-probabilities-between-0-and-1-using-glmnet-logistic-regression
+#Must use glmnet
+#have a parameter alpha, 1= lasso, 0=ridge, between 0 and 1 is elastic net, use .5 for balanced design
+#predicitors and target must be separate and in matrix form
+#i couldnt figure out how to get factors to work
+#but the second link describes how to set up factors as dummies
+x_train <- as.matrix(train[-1])
+lasso.fit = glmnet(x=x_train, y = as.factor(train$cofy), family = "binomial", alpha=1)
+lasso.fit
+#See standord videos on lambda and shrinkage idea
+lm = cv.glmnet(x=x_train,y = as.factor(train$cofy), family =   "binomial", alpha=1)
+#this appears to be an order of mag too small???
+best_lambda <- lm$lambda[which.min(lm$cvm)]
+best_lambda
+
+par(mfrow=(c(1,2)))
+plot(lasso.fit, xvar = "lambda", label = TRUE )
+plot(lm)
+coef(lasso.fit, s=.005)
+#seek best lambda
+
+
+coef(lm, s = .0055)
+coef(lasso.fit, s=.0055)
+coef(lasso.fit, s=.00047)
+lrm.fit
+
+
+
+plasso=predict(lm, newx = as.matrix(train[-1]), s = "lambda.min", type = "response")
+quantile(plasso)
+mean(plasso)
+mean(train$cofy)
+
+
+#model lift and AUC
+
+perf.lastrain = data.frame(plasso,as.numeric(train$cofy))
+names(perf.lastrain) = c("predicted","actual")
+summary(perf.lastrain)
+lift.lastrain = LIFT(perf.lastrain, "predicted", "actual", 1)
+AUC.lastrain = AUC(lift.lastrain, "RevRate.pct", "DetecRate.pct")
+AUC.lastrain
+
+
+
+
+
+#testing model lift and AUC
+
+#plassotest=predict(lm, newx = as.matrix(test[-1]), s = "lambda.min", type = "response")
+plassotest=predict(lm, newx = as.matrix(test[-1]), s = .005, type = "response")
+perf.lastest = data.frame(plassotest,as.numeric(test$cofy))
+names(perf.lastest) = c("predicted","actual")
+summary(perf.lastest)
+lift.lastest = LIFT(perf.lastest, "predicted", "actual", 1)
+AUC.lastest = AUC(lift.lastest, "RevRate.pct", "DetecRate.pct")
+AUC.lastest
+
+
+
+#http://www.r-bloggers.com/illustrated-guide-to-roc-and-auc/
+#AUC=auc(as.numeric(test$target), as.numeric(ptest2[,2]) )
+#AUC2=auc(as.numeric(test$target), as.numeric(ptest) )
+#AUC
+#AUC2
+
+
+#Lift Chart Comparison
+
+par(mfrow=(c(1,1)))
+plot(lift.lastest$RevRate.pct, lift.lastest$DetecRate.pct, type = "l", col = "red",  lty=2, ylab="", xlab="") 
+grid(col="gray", lty = "dotted")
+lines(lift.lastrain$RevRate.pct, lift.lastrain$DetecRate.pct, type = "l", col = "blue")
+lines(c(0,100), c(0,100), type = "l", lty = 2, col = "black")
+
+title("Lift | LASSO | Lasso Train/Test", ylab="Cumulative Lift", xlab="Review Rate")
+legend(x=70, y=40, c("Test","Train", "Random"), cex=0.8, col=c("red","blue","black"), lty=1)
+
+
+
+
+
+
+
+
+#compare logit to lasso in test
+
+par(mfrow=(c(1,1)))
+plot(lift.lastest$RevRate.pct, lift.lastest$DetecRate.pct, type = "l", col = "red",  lty=2, ylab="", xlab="") 
+
+grid(col="gray", lty = "dotted")
+lines(lift.glmtest$RevRate.pct, lift.glmtest$DetecRate.pct, type = "l", col = "blue") 
+#lines(lift.lastrain$RevRate.pct, lift.lastrain$DetecRate.pct, type = "l", col = "blue")
+lines(c(0,100), c(0,100), type = "l", lty = 2, col = "black")
+
+title("Lift | Test Data | Lasso v Logit", ylab="Cumulative Lift", xlab="Review Rate")
+legend(x=70, y=40, c("Lasso","Logit", "Random"), cex=0.8, col=c("red","blue","black"), lty=1)
+
+
+
+
+
+
+
+#begin Random forest development
+#Bagging defined for Forest
+
+# Given a standard training set D of size n, bagging generates m new training sets 
+# each of size n′, by sampling from D uniformly and with replacement.
+# By sampling with replacement, some observations may be repeated in each . 
+# If n′=n, then for large n the set is expected to have the fraction (≈63.2%) (1-this is OOBsample)
+# of the unique examples of D,the rest being duplicates.[1] This kind of sample is 
+# known as a bootstrap sample. The m models are fitted using the above m bootstrap samples and combined
+# by averaging the output (for regression) or voting (for classification).
+
+# Random forests differ in only one way from this general scheme: they use a modified tree learning 
+# algorithm that selects, at each candidate split in the learning process, a random subset of the 
+# features. This process is sometimes called "feature bagging". The reason for doing this is the 
+# correlation of the trees in an ordinary bootstrap sample: if one or a few features are very strong 
+# predictors for the response variable (target output), these features will be selected in many of the
+# B trees, causing them to become correlated. 
+
+#Builing and tuning model has multiple steps
+#A. Prep data and target (IMPORTANT)
+#1. find optimal number of trees with full model (ntree) and default parameters else
+#2. find the optimal mtry using full model again, compare between tunrRF and caret train (prefer caret::train)  
+#3. build new foresrt on training data using optimal ntree and mtry
+#4. Calculate probs and assess accuracy in and out of sample (consider cval)
+#5. check lift and fit stats compared to random
+
+
+#A.
+#make sure target is a factor if class, numeric if regression for forest
+
+lcmod60$target=as.factor(lcmod60$cofy)
+train$target=as.factor(train$cofy)
+test$target=as.factor(test$cofy)
+
+levels(lcmod60$target)=c("CO_No", "CO_Yes")
+levels(test$target)=c("CO_No", "CO_Yes")
+levels(train$target)=c("CO_No", "CO_Yes")
+
+table(lcmod60$target)
+
+#I dont understand why a -1 is needed, variable is 0,1 as cofy...
+mean(as.numeric(lcmod60$target)-1)
+mean(as.numeric(train$target)-1)
+mean(as.numeric(test$target)-1)
+
+#need to drop target feature before bulding other models from frame
+
+
+#1.   Find ntree
+
+# fit model using defaults and all vars all data
+#Model statement is specific to data being used, make sure to remove numeric target and class target from X
+rfm <- randomForest(target~ . -target -cofy , data=lcmod60, importance=TRUE, do.trace=100, ntree=1000)
+# summarize the fit
+summary(rfm)
+rfm
+
+
+#creates a plot of OOB error to determine optimal ntree at default or set mtry
+#plotting RF object data from err.rate.  first column is OOB
+#http://www.harding.edu/fmccown/r/ good graph link
+#figure out how to flag minimum using vertical line 
+#Error as a function of ntree OOB
+#SELECT BEST NTRY at this step 
+par(mfrow=c(1,1))
+plot(rfm$err.rate[,1], type="l", xlab="Number of Trees", ylab="OOB Error")
+
+
+
+
+#End not used fragments                    
+#####                    
+
+#2.  Find mtry, number of variables to select at the split
+#For classification a good default is: m = sqrt(p)
+#find optimal mtry, the number of variabels selected at random each split as candidates
+#mtry is important to keep trees uncorrelated (fewer better), but simultaneousy create strong trees (more is better)
+#str(tuneRF) to see what each element is, but first is x martix, second is outcome, etc.
+#train on whole data set
+#method 1 with randomForest::tuneRF
+# names(RF_data)
+# #mtry=tuneRF(iris[-5], iris$Species, ntreeTry=500, stepFactor=1.5, improve=0.01, trace=TRUE, plot=TRUE)
+# mtry=tuneRF(RF_data[2:4], RF_data$target, ntreeTry=50,  improve=0.001, trace=TRUE, plot=TRUE)
+# names(data.frame(mtry))
+# print(mtry)
+# #parameterize best mtry but best to use visula inspection of plot and type in mtry
+# best.mtry=mtry[mtry[,2]==min(mtry[,2]),1]
+# best.mtry
+
+#Method 2 (prefered) with caret::train
+#another approach testing mtry using caret
+#this takes a while but produces a table that should be viewed to find best accuracy number 
+caret.mtry=train(target~. -target -cofy, data=lcmod60, method="rf", ntree=30, nodesize=50)
+caret.mtry
+plot(caret.mtry)
+
+#3.  Build first pass on train and assess variable importance for sense
+#rebuild rf with opt mtry and ntree
+
+
+rfm.opt=randomForest(target~. -target -cofy, data=train, mtry=3, ntree=200, nodesize=1, importance=TRUE)
+plot(rfm.opt$err.rate[,1], type="l", xlab="Number of Trees", ylab="OOB Error")
+
+#identify important variables and trends for optimal model optimized on mtry and ntree
+importance(rfm.opt)
+#link https://dinsdalelab.sdsu.edu/metag.stats/code/randomforest.html
+#1=Accuracy 2=Gini
+par(mfrow=c(1,2))
+varImpPlot(rfm.opt, type=1, main="Variable Importance Plot", pch=18, color="blue")
+varImpPlot(rfm.opt, type=2, main="Variable Importance Plot", pch=18, color="red")
+
+#Notes on VIP methods and types
+
+# 1 train forest
+# 2 measure out-of-bag CV accuracy -> OOB_acc_base
+# 3 permute variable i
+# 4 measure out-of-bag CV accuracy -> OOB_acc_perm_i
+# 5 VI_i = - (OOB_acc_perm_i - OOB_acc_base)
+ #Type =1 is Accuracy defined by # of classification errors introduced by permutaiton
+ #Type =2 is Gini defined by impurity in node splits introduced by permutaiton
+# Here are the definitions of the variable importance measures. The first measure is computed from
+# permuting OOB data: For each tree, the prediction error on the out-of-bag portion of the data is
+# recorded (error rate for classification, MSE for regression). Then the same is done after permuting
+# each predictor variable. The difference between the two are then averaged over all trees, and normalized
+# by the standard deviation of the differences. If the standard deviation of the differences is
+# equal to 0 for a variable, the division is not done (but the average is almost always equal to 0 in that
+#                                                      case).
+# The second measure is the total decrease in node impurities from splitting on the variable, averaged
+# over all trees. For classification, the node impurity is measured by the Gini index. For regression, it
+# is measured by residual sum of squares.
+
+
+
+
+
+
+#names(Default)
+
+
+
+
+#Variable Importance
+#https://www.r-bloggers.com/variable-importance-plot-and-variable-selection/
+imp2=data.frame(rfm$importance)
+rfm$importance
+VI_F=importance(rfm)
+par(mfrow=c(3, 1))
+varImpPlot(rfm, type=1) #decrease in accuracy
+varImpPlot(rfm, type=2)#decrease in gini
+barplot(t(VI_F[,4]/sum(VI_F[,4]))) #percent of total decrease in gini
+plots=(t(VI_F[,4]/sum(VI_F[,4])))
+
+#Partial Plots
+#https://www.r-bloggers.com/variable-importance-plot-and-variable-selection/
+
+
+par(mfrow=c(3,2)) 
+partialPlot(rfm.opt, train, "bc_open_to_buy", main="open to buy")
+partialPlot(rfm.opt, test, "bc_open_to_buy", main="open to buy (test)")
+
+partialPlot(rfm.opt, train, "annual_inc", main="Income (train)")
+partialPlot(rfm.opt, test, "annual_inc", main="Income (test)")
+
+partialPlot(rfm.opt, train, "delinq_2yrs", main= "DQ 2 yr(train)")
+partialPlot(rfm.opt, test, "delinq_2yrs", main="DQ 2 yr (test)")
+
+
+
+#Order by decrease in gini for partial plots in order of VI
+#imp2[order(-imp2$MeanDecreaseGini),] 
+
+
+
+names=rownames(imp2[order(-imp2$MeanDecreaseGini),])#[importanceOrder][1:6]
+
+par(mfrow=c(length(names)/2, 2), xpd=NA)
+for (name in names)
+  partialPlot(rfm, lcmod60, eval(name), main=name, xlab=name)#,ylim=c(-.2,.9))
+
+
+
+
+
+
+#run 10 fold CV on the model 10 times.  in the errorest function cv is called where k=10
+#CV analysis for RF suing ipred
+# library(ipred)
+#  set.seed(132)
+#  error.RF <- numeric(10)
+# for(i in 1:10) error.RF[i] <-
+#               errorest(target~HSAGEIR + HSSEX + DMARACER + BMPWTLBS + BMPHTIN + smokenow + HAR3, data=train, 
+#               model = randomForest, mtry = 2, ntree=300)
+# summary(error.RF)
+# 
+# tryitx=cv(train$target, target~HSAGEIR + HSSEX + DMARACER + BMPWTLBS + BMPHTIN + smokenow + HAR3, data=train,
+#          model=randomForest, predict, random=TRUE, predictions=TRUE, type="prob", k=5)
+# 
+# 
+# tryit2 <-
+#   errorest(target~HSAGEIR + HSSEX + DMARACER + BMPWTLBS + BMPHTIN + smokenow + HAR3, data=train, 
+#            model = randomForest, mtry = 2, ntree=300)
+# predxval=data.frame(as.numeric(tryitx$predictions)-1)
+# summary(predxval)
+# describe(predxval)
+# 
+# , random=TRUE, 
+#    strat=FALSE,
+#    predictions=NULL, getmodels=NULL, list.tindx = NULL, ...) 
+# 
+# 
+# 
+# getTree(rfm.opt,100, labelVar=TRUE)
+
+
+
+
+
+
+#4.  Make predictions and test model accuracy
+
+# make predictions
+#predict function creates a vector that contains a value of 
+
+
+#TRAINING DATA
+
+ptrain <- predict(rfm.opt, train, type="response")  #response and class are the same in type option returns yes no
+ptrainview=data.frame(ptrain)
+ptrain2 <- predict(rfm.opt, train, type="prob")  #response and class are the same in type option returns prob of no yes, use type = prob for AUC/Lift
+# summarize accuracy in sample
+table(ptrain)
+table(train$target)
+table(ptrain, train$target)
+mean(train$target==ptrain)#insample predicted correct rate
+confusionMatrix(train$target,ptrain)
+par(mfrow=(c(1,1)))
+hist(ptrain2[,2])
+
+
+
+
+
+
+# 
+# #http://www.r-bloggers.com/illustrated-guide-to-roc-and-auc/
+# AUCx=auc(as.numeric(train$target), as.numeric(ptrain2[,2]) )
+# AUCx
+
+
+
+#Use Code from Joon for AUC and lift charts
+#target has to be (0,1)
+
+
+
+#prepare training for scoring
+#USE SCORES FROM TYPE = PROB PREDICT STATEMENT
+perf.train = data.frame(as.numeric(ptrain2[,2]),as.numeric(train$target)-1)
+names(perf.train) = c("predicted","actual")
+perf.train=subset(perf.train,!is.na(predicted))
+describe(perf.train)
+summary(perf.train)
+
+#LIFT STATS AND DATA
+lift.train = LIFT(perf.train, "predicted", "actual", 1)
+AUC.train = AUC(lift.train, "RevRate.pct", "DetecRate.pct")
+AUC.train
+
+par(mfrow=c(1,1))
+plot(lift.train$RevRate.pct, lift.train$DetecRate.pct, type = "l", col = "red", lwd=2, ylab="", xlab="") #MODEL LIFT
+lines(c(0,100), c(0,100), type = "l", lty = 2, col = "black", lwd=2 ) #RANDOM LINE
+grid(col="gray", lty = "dotted")
+title("Lift | Training | RFM In Sample", ylab="Cumulative Lift", xlab="Review Rate")
+
+
+
+#TEST DATA
+#prepare training for scoring
+
+ptest <- predict(rfm.opt, test, type="response") #FOR TABULAR AND MEANS
+ptest2 <- predict(rfm.opt, test, type="prob") #FOR LIFT ETC.
+# summarize accuracy OOS
+table(ptest)
+table(test$target)
+table(ptest, test$target)
+mean(test$target==ptest)#oos predicted correct rate
+
+
+confusionMatrix(test$target,ptest)
+hist(ptest2[,2])
+
+#http://www.r-bloggers.com/illustrated-guide-to-roc-and-auc/
+#AUC=auc(as.numeric(test$target), as.numeric(ptest2[,2]) )
+#AUC2=auc(as.numeric(test$target), as.numeric(ptest) )
+#AUC
+#AUC2
+
+perf.test = data.frame(ptest2[,2],as.numeric(test$target)-1)
+names(perf.test) = c("predicted","actual")
+describe(perf.test)
+summary(perf.test) #compare pred to atual rates
+
+
+lift.test = LIFT(perf.test, "predicted", "actual", 1)
+AUC.test = AUC(lift.test, "RevRate.pct", "DetecRate.pct")
+AUC.test
+par(mfrow=(c(1,1)))
+plot(lift.test$RevRate.pct, lift.test$DetecRate.pct, type = "l", col = "red",  lty=2, ylab="", xlab="") 
+grid(col="gray", lty = "dotted")
+lines(lift.train$RevRate.pct, lift.train$DetecRate.pct, type = "l", col = "blue")
+lines(c(0,100), c(0,100), type = "l", lty = 2, col = "black")
+
+title("Lift | Training | RFM Test", ylab="Cumulative Lift", xlab="Review Rate")
+legend(x=70, y=40, c("Test","Train", "Random"), cex=0.8, col=c("red","blue","black"), lty=1)
+
+
+#Compare logit, lasso and forest with same features
+
+par(mfrow=(c(1,1)))
+plot(lift.test$RevRate.pct, lift.test$DetecRate.pct, type = "l", col = "red",  lty=2, ylab="", xlab="") 
+grid(col="gray", lty = "dotted")
+lines(lift.glmtest$RevRate.pct, lift.glmtest$DetecRate.pct, type = "l", col = "blue")
+lines(lift.lastest$RevRate.pct, lift.lastest$DetecRate.pct, type = "l", lty = 2, col = "black")
+lines(c(0,100), c(0,100), type = "l", lty = 2, col = "grey")
+title("Lift | Test file across RF, Logit, and LASSO", ylab="Cumulative Lift", xlab="Review Rate")
+legend(x=90, y=30, c("Forest","Logit", "Lasso", "Random"), cex=0.8, col=c("red","blue","black", "grey"), lty=1)
+
+
+
+
+
+
+
+
+
+
+
+#boosted tree using GBM
+#https://jonlefcheck.net/2015/02/06/a-practical-guide-to-machine-learning-in-ecology/
+#https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/j.1365-2656.2008.01390.x
+#https://www.analyticsvidhya.com/blog/2016/12/practical-guide-to-implement-machine-learning-with-caret-package-in-r-with-practice-problem/
+#http://www.saedsayad.com/docs/gbm2.pdf
+
+#base model
+gbmfit=gbm(cofy~dti+ annual_inc+  fico_range_high + creditage +mo_sin_rcnt_rev_tl_op +open_acc +revol_bal            
+          +all_util + tot_cur_bal +inq_last_12m + delinq_2yrs + bc_open_to_buy ,                
+          data=train,  
+          distribution = "bernoulli",
+          n.trees=1000,
+          interaction.depth=2,
+          bag.fraction = 0.5,
+          train.fraction = 0.5,
+          n.minobsinnode = 10,
+          shrinkage = .05,
+          cv.folds = 3
+          # keep.data=TRUE,
+          # verbose=FALSE
+          )
+    
+gbm.perf(gbmfit,  plot.it = TRUE,  oobag.curve = FALSE,  overlay = TRUE)
+
+best.iter <- gbm.perf(gbmfit,method="OOB")
+print(best.iter)
+summary(gbmfit,n.trees=3)         # based on the first tree
+summary(gbmfit,n.trees=best.iter) # based on the estimated best number of trees
+
+
+
+
+#set up caret inputs for grid serch on hyper paramters 
+#hyper parms are trees, shrinkage and interaction depth most important
+
+grid <- expand.grid(n.trees=c(500,1000),shrinkage=c(0.01,0.05,0.1),
+                    n.minobsinnode = c(3,5,10),interaction.depth=c(1,2,5))
+
+fitControl <- trainControl(
+  method = "repeatedcv",
+  number = 5,
+  repeats = 5)
+
+
+
+
+gbm.trn=train(as.factor(cofy)~dti+ annual_inc+  fico_range_high + creditage +mo_sin_rcnt_rev_tl_op +open_acc +revol_bal            
+       +all_util + tot_cur_bal +inq_last_12m + delinq_2yrs + bc_open_to_buy ,                
+       data=train,  preProc= c("center", "scale"), 
+        method = "gbm", verbose = F,trControl=fitControl,tuneGrid=grid
+      
+      )
+
+
+#this code read bottom of output helps find optimal suite of hyper parms based off of gris and trainctrl inputs
+gbm.trn
+summary(gbm.trn)
+plot(gbm.trn)
+
+#Plotting Varianle importance for GBM
+plot(varImp(object=gbm.trn),main="GBM - Variable Importance")
+
+#best model using caret model train output
+gbm.opt=gbm(cofy~dti+ annual_inc+  fico_range_high + creditage +mo_sin_rcnt_rev_tl_op +open_acc +revol_bal            
+           +all_util + tot_cur_bal +inq_last_12m + delinq_2yrs + bc_open_to_buy ,                
+           data=train,  
+           distribution = "bernoulli",
+           n.trees=500,
+           interaction.depth=1,
+           bag.fraction = 0.5,
+           train.fraction = 0.5,
+           n.minobsinnode = 3,
+           shrinkage = .01,
+           #cv.folds = 3,
+            keep.data=TRUE
+           # verbose=FALSE
+)
+
+summary(gbm.opt)
+#Varible imoprtance plot of inputs to get direction of impact
+#should correspond with anticipated signs
+#based on training
+par(mfrow=(c(3,3)))
+plot(gbm.opt, "tot_cur_bal")
+plot(gbm.opt, "dti")
+plot(gbm.opt, "creditage")
+plot(gbm.opt, "revol_bal")
+plot(gbm.opt, "bc_open_to_buy")
+plot(gbm.opt, "mo_sin_rcnt_rev_tl_op")
+plot(gbm.opt, "fico_range_high")
+plot(gbm.opt, "all_util")
+plot(gbm.opt, "open_acc")
+
+
+#predict obs with model object gbm.opt on train and test populations
+#note type = respose writes out prob not classigicaiton
+gbm.train=predict(gbm.opt, train, type="response")
+mean(gbm.train)
+mean(train$cofy)
+
+gbm.test=predict(gbm.opt, test, type="response")
+mean(gbm.test)
+mean(test$cofy)
+
+
+
+#Set up data frames for AUC and lift analysis in train and test files
+perf.gbmtrain = data.frame(gbm.train,as.numeric(train$cofy))
+names(perf.gbmtrain) = c("predicted","actual")
+describe(perf.gbmtrain)
+summary(perf.gbmtrain) #compare pred to atual rates
+
+
+lift.gbmtrain = LIFT(perf.gbmtrain, "predicted", "actual", 1)
+AUC.gbmtrain = AUC(lift.gbmtrain, "RevRate.pct", "DetecRate.pct")
+AUC.gbmtrain
+
+perf.gbmtest = data.frame(gbm.test,as.numeric(test$cofy))
+names(perf.gbmtest) = c("predicted","actual")
+describe(perf.gbmtest)
+summary(perf.gbmtest) #compare pred to atual rates
+
+
+lift.gbmtest = LIFT(perf.gbmtest, "predicted", "actual", 1)
+AUC.gbmtest= AUC(lift.gbmtest, "RevRate.pct", "DetecRate.pct")
+AUC.gbmtest
+
+
+
+par(mfrow=(c(1,1)))
+plot(lift.gbmtrain$RevRate.pct, lift.gbmtrain$DetecRate.pct, type = "l", col = "red",  lty=2, ylab="", xlab="") 
+grid(col="gray", lty = "dotted")
+lines(lift.gbmtest$RevRate.pct, lift.gbmtest$DetecRate.pct, type = "l", col = "blue")
+lines(c(0,100), c(0,100), type = "l", lty = 2, col = "black")
+
+title("Lift | GBM", ylab="Cumulative Lift", xlab="Review Rate")
+legend(x=70, y=40, c("Train","Test", "Random"), cex=0.8, col=c("red","blue","black"), lty=1)
+
+
+#Compare logit, lasso and forest with same features
+
+par(mfrow=(c(1,1)))
+plot(lift.test$RevRate.pct, lift.test$DetecRate.pct, type = "l", col = "red",  lty=2, ylab="", xlab="") 
+grid(col="gray", lty = "dotted")
+lines(lift.glmtest$RevRate.pct, lift.glmtest$DetecRate.pct, type = "l", col = "blue")
+lines(lift.lastest$RevRate.pct, lift.lastest$DetecRate.pct, type = "l", lty = 2, col = "black")
+lines(lift.gbmtest$RevRate.pct, lift.gbmtest$DetecRate.pct, type = "l", lty = 2, col = "yellow")
+lines(c(0,100), c(0,100), type = "l", lty = 2, col = "grey")
+title("Lift | Test file across RF, Logit, LASSO and GBM", ylab="Cumulative Lift", xlab="Review Rate")
+legend(x=90, y=30, c("Forest","Logit", "Lasso", "GBM", "Random"), cex=0.8, col=c("red","blue","black", "yellow", "grey"), lty=1)
+
+
+
+
+
+
+
+#misc code
+
+
+lc60$new_emp_bin[(lc60$new_emp<= 8) & (lc60$new_emp> 0)] <- 0
+lc60$new_emp_bin[(lc60$new_emp> 8)] <- 1
+lc60$new_emp_bin[(lc60$new_emp<= 0) ] <- -1
+table(lc60$new_emp_bin)
+
+lc60$modeliq=cut(lc$mths_since_last_delinq, breaks=c(-Inf, 0, 12, 24, 36, Inf), quantiles=FALSE)
+lc$dq_class[lc$mths_since_last_delinq<= 6] <- "recent6"
+lc$dq_class[lc$mths_since_last_delinq<= 12 & lc$mths_since_last_delinq> 6] <- "recent6_12"
+lc$dq_class[lc$mths_since_last_delinq<= 24 & lc$mths_since_last_delinq> 12] <- "recent12_24"
+lc$dq_class[lc$mths_since_last_delinq<= 36 & lc$mths_since_last_delinq> 24] <- "recent24_36"
+lc$dq_class[lc$mths_since_last_delinq<= 48 & lc$mths_since_last_delinq> 36] <- "recent36_48"
+lc$dq_class[lc$mths_since_last_delinq<= 84 & lc$mths_since_last_delinq> 48] <- "recent48_84"
+lc$dq_class[lc$mths_since_last_delinq>84 ] <- "recent84"
+lc$logicdq=is.na(lc$mths_since_last_delinq)
+
+
+
+
+varImpPlot(rfm.opt, sort=TRUE, n.var=min(30, nrow(rfm.opt$importance)),
+           type=NULL, class=NULL, scale=TRUE, 
+            ...)
+
