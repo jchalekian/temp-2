@@ -1,0 +1,53 @@
+cont_pre=function(df, expvar, target, nrnk){
+  #df=data frame
+  #expvar = exploratory variable
+  #target = target binanry outcome
+  #nrnk = a number for number of bins to create in  rankorder plots
+  
+    # impute missing with mean value
+   #similarly you can use min, max, median to impute missing value or 'random'
+  attach(df)
+  print(describe(expvar))
+  imp<- impute(expvar, mean)
+  print(describe(imp))
+  
+  #Truncate upper and lower extremes
+  #install.packages('scales')
+  #library(scales)
+  pr <- .975
+  q  <- quantile(imp, c(1-pr, pr))
+  imp2 <- squish(imp, q)
+  print(describe(imp2))
+  print(mean(target))
+  
+    #rank using cut function into nrnk groups
+  rnk=cut(imp2, breaks=(quantile(imp2, probs=c(0:nrnk/nrnk))), labels=1:nrnk, 
+          include.lowest=TRUE) 
+  
+  #grahical analyses
+  par(mfrow=c(2,2)) 
+  hist(imp2, main="Truncated Extremes ")
+  boxplot(as.numeric(imp)~target, 
+          horizontal=T, frame=F, col="lightgray",main="Distribution") 
+  meanrnk=aggregate(target, list(rnk), mean)
+  meanrnk <- rename(meanrnk, c(x="Charge Off Rate"))
+  meanrnk2=aggregate(imp, list(rnk), mean)
+  meanrnk2 <- rename(meanrnk2, c(x="Mean Rank"))
+  preplot<- merge(meanrnk2, meanrnk,by="Group.1")
+  df2=preplot[,-1]
+  print(df2[order(df2$"Mean Rank"),])
+  preplot$lnodds=log(preplot$`Charge Off Rate`/(1-preplot$`Charge Off Rate`))
+  plot(preplot[,2:3])
+  plot(preplot$`Mean Rank`,preplot$lnodds, ylab="LN Odds", xlab="Mean Rank")
+  
+  #regression of ln odds vs mean rank
+  lnmodel=data.frame(preplot$`Mean Rank`,preplot$lnodds)
+  lmodel=lm( preplot.lnodds~preplot..Mean.Rank., lnmodel  )
+  print(summary(lmodel))
+  
+  
+  glm.fit2=lrm(target~expvar, df,
+                x=TRUE, y=TRUE )
+    print((glm.fit2))
+  detach(df)
+  
