@@ -1,0 +1,23 @@
+bin=function(df, miss, binvar, target){
+  
+  attach(df)
+  df=subset(df,!is.na(miss)) #missings excluded
+  detach(df)
+  
+  result=smbinning(df=df,y=target,x=binvar,p=0.05) 
+  print(result$ivtable)
+  
+  # Relevant plots (2x2 Page) 
+  par(mfrow=c(1,2)) 
+  #mtext(binvar,3) 
+  smbinning.plot(result,option="dist") 
+  smbinning.plot(result,option="goodrate") 
+  
+ 
+  dfbin=data.frame(smbinning.gen(df, result, chrname = "bin"))
+  print(table(dfbin$bin))
+  
+  
+  
+  
+}
